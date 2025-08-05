@@ -1,0 +1,110 @@
+import streamlit as st
+import plotly.graph_objects as go
+import pandas as pd
+import config  # Solo si tienes tu archivo config.py con el logo, CSS, etc.
+
+# --- OPCIONAL: LOGO Y CSS ---
+st.logo(
+    image=config.horizontal,
+    size="large",
+    icon_image=config.icon
+)
+st.markdown(config.CSS, unsafe_allow_html=True)
+
+st.set_page_config(
+    page_title="Semáforo PO",
+    page_icon=":bar_chart:",
+    layout="centered"
+)
+
+st.title("KPI - Supplier Process")
+
+if "df_base" in st.session_state:
+    df = st.session_state["df_base"]
+else:
+    st.warning("Primero ve a 'Inicio' para cargar el archivo.")
+
+# Convertir a fecha
+df['Fecha de PO'] = pd.to_datetime(df['Fecha de PO'], errors='coerce')
+df['EXW Real'] = pd.to_datetime(df['EXW Real'], errors='coerce')
+
+# Filtrar solo filas con EXW Real
+df_validas = df[df['EXW Real'].notna()].copy()
+
+# Calcular diferencia en días
+df_validas['Diferencia días calculada'] = (df_validas['EXW Real'] - df_validas['Fecha de PO']).dt.days
+
+# OPCIONAL: EXCLUIR DIFERENCIAS NEGATIVAS
+df_validas = df_validas[df_validas['Diferencia días calculada'] >= 0]
+
+# Semáforo
+def status_semáforo(dias):
+    if pd.isna(dias):
+        return 'Sin fecha'
+    elif 0 <= dias <= 6:
+        return 'En tiempo'
+    elif dias >= 7:
+        return 'On Delay'
+    else:
+        return 'Revisar'
+df_validas['Semáforo'] = df_validas['Diferencia días calculada'].apply(status_semáforo)
+
+df_validas['mes'] = df_validas['Fecha de PO'].dt.to_period('M')
+
+meses_opciones = ["Todos"] + [str(m) for m in sorted(df_validas['mes'].dropna().unique())]
+mes_elegido = st.selectbox("📅 Selecciona un mes:", options=meses_opciones)
+
+if mes_elegido != "Todos":
+    df_filtrado = df_validas[df_validas['mes'].astype(str) == mes_elegido]
+else:
+    df_filtrado = df_validas
+
+# Mostrar tabla
+st.subheader("Fecha de PO vs EXW Real")
+st.dataframe(df_filtrado[['PO', 'Fecha de PO', 'EXW Real', 'Diferencia días calculada', 'Semáforo']])
+
+# Calcula el promedio y el número de registros considerados
+if not df_filtrado['Diferencia días calculada'].dropna().empty:
+    promedio_dias = df_filtrado['Diferencia días calculada'].mean().round(0)
+else:
+    promedio_dias = 0
+
+num_filas = len(df_filtrado)
+
+# Percentiles
+serie = df_filtrado['Diferencia días calculada'].dropna()
+p50 = serie.quantile(0.5)
+p75 = serie.quantile(0.75)
+p95 = serie.quantile(0.95)
+
+# Definir límites para el gauge según percentiles
+minimo = 0
+maximo = int(p95) + 2  # Usamos P95 para rango superior
+tick_vals = list(range(minimo, maximo+1, 8))
+
+fig = go.Figure(go.Indicator(
+    mode="gauge+number+delta",
+    delta={'reference': 8, 'increasing': {'color': "red"}, 'decreasing': {'color': "green"}},
+    value = promedio_dias,
+    number = {'suffix': " Días", 'font': {'size': 36}},
+    gauge = {
+        'axis': {'range': [minimo, maximo], 'tickmode': 'array', 'tickvals': tick_vals, 'tickfont': {'size': 16}},
+        'steps': [
+            {'range': [minimo, p50], 'color': 'green'},
+            {'range': [p50, p75], 'color': 'yellow'},
+            {'range': [p75, p95], 'color': 'orange'},
+            {'range': [p95, maximo], 'color': 'red'}
+        ],
+        'bar': {'color': "black", 'thickness': 0.25},
+    }
+))
+
+st.subheader("Semáforo Fecha de PO vs EXW Real. ")
+st.plotly_chart(fig)
+st.markdown(
+    f"Promedio considerando {num_filas} diferencias.<br>"
+    f"Percentil 50: <b>{p50:.2f}</b> días &nbsp;&nbsp; Percentil 75: <b>{p75:.2f}</b> días &nbsp;&nbsp; Percentil 95: <b>{p95:.2f}</b> días",
+    unsafe_allow_html=True
+)
+
+st.info("El gauge está ajustado a los percentiles para que sea más representativo de los casos reales.")
